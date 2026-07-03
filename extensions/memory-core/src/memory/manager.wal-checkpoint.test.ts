@@ -40,7 +40,7 @@ function restoreStateDir(): void {
   }
 }
 
-describe("writeMeta WAL checkpoint", () => {
+describe("WAL checkpoint after publish", () => {
   let fixtureRoot = "";
   let caseId = 0;
   let workspaceDir = "";
@@ -111,32 +111,37 @@ describe("writeMeta WAL checkpoint", () => {
     return manager;
   }
 
-  it("writeMeta calls PRAGMA wal_checkpoint(TRUNCATE) during sync", async () => {
-    // Proves the fix: writeMeta itself forces a WAL checkpoint after writing
-    // the meta row, independent of closeMemoryDatabase. On unpatched main,
-    // the only checkpoint happens during close — meta can be lost if the
-    // process is killed before close.
+  it("live database is WAL-checkpointed after publish during full reindex", async () => {
+    // Proves the fix: after publishMemoryDatabaseTables copies meta (and all
+    // index data) from the shadow reindex DB to the live per-agent database,
+    // a TRUNCATE checkpoint flushes the WAL so meta survives hard process
+    // kills. On unpatched main, the only checkpoint on the live DB happens
+    // during close — meta can be lost if the process is killed before close.
+    //
+    // The checkpoint uses prepare().get() (not exec) so the busy/wal frame
+    // count can be inspected.
     //
     // This test exercises the real per-agent DB path resolved through
     // resolveOpenClawAgentSqlitePath (not a legacy store.path override).
 
-    const execSpy = vi.spyOn(DatabaseSync.prototype, "exec");
+    const prepareSpy = vi.spyOn(DatabaseSync.prototype, "prepare");
 
     const memoryManager = await createManager();
-    // DB init may call exec; reset to capture only sync-period calls.
-    execSpy.mockClear();
+    // DB init may call prepare; reset to capture only sync-period calls.
+    prepareSpy.mockClear();
 
     await memoryManager.sync();
 
-    const checkpointCalls = execSpy.mock.calls.filter(
+    const checkpointCalls = prepareSpy.mock.calls.filter(
       ([sql]) => typeof sql === "string" && sql === "PRAGMA wal_checkpoint(TRUNCATE)",
     );
 
-    // At least one checkpoint fired during sync (from writeMeta).
-    // Close-time checkpoint may add more, but the sync-time call is the fix.
+    // At least one TRUNCATE checkpoint fired during sync on the live DB
+    // after publish. Close-time checkpoint (via WAL maintenance) may add
+    // more, but the sync-time post-publish call is the fix.
     expect(checkpointCalls.length).toBeGreaterThan(0);
 
-    execSpy.mockRestore();
+    prepareSpy.mockRestore();
   });
 
   it("meta row is durable across manager close/reopen on the per-agent DB", async () => {

@@ -2792,6 +2792,25 @@ export abstract class MemoryManagerSyncOps {
         expectedRevision: originalRevision,
         vectorExtensionPath: this.vector.extensionPath,
       });
+      // Force WAL checkpoint on the live database so published meta survives
+      // process crashes. The publish writes meta to the live DB inside a
+      // transaction, but the WAL may not be flushed to the main file. A
+      // hard kill (OOM, SIGKILL, power loss) before the next close-time
+      // checkpoint would lose the meta row, causing "index metadata is
+      // missing" on next startup.
+      try {
+        const checkpointResult = originalDb.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as
+          | { wal: number; busy: number }
+          | undefined;
+        if (checkpointResult?.busy) {
+          log.warn(
+            `live database WAL checkpoint busy after publish (${checkpointResult.wal} frames in WAL); meta may not survive a hard crash`,
+          );
+        }
+      } catch {
+        // Non-fatal: checkpoint may fail in read-only or edge cases.
+        // The normal close path will still attempt a checkpoint.
+      }
 
       this.db = originalDb;
       this.resetVectorState();
@@ -2859,16 +2878,6 @@ export abstract class MemoryManagerSyncOps {
         `INSERT INTO memory_index_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`,
       )
       .run(META_KEY, value);
-    // Force WAL checkpoint so meta survives process crashes.
-    // Without this, the meta row may live only in the WAL file; if the
-    // process is killed before closeMemoryDatabase() checkpoints, the
-    // next startup reads no meta and declares the index missing.
-    try {
-      this.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-    } catch {
-      // Non-fatal: checkpoint may fail in read-only or edge cases.
-      // The normal close path will still attempt a checkpoint.
-    }
     this.lastMetaSerialized = value;
   }
 }
