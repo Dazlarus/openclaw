@@ -84,6 +84,7 @@ import {
   resolveCompactionThreshold,
   resolveProjectedPromptTokens,
   resolveResponsesServerCompactionThreshold,
+  resolveStaleSessionTotalTokensForGate,
   settleFailedPreflightCompaction,
   shouldRunPreflightCompaction,
 } from "./memory-flush.js";
@@ -180,7 +181,8 @@ export async function runSessionCompactionIfNeeded(params: {
       contextTokenBudget: contextWindowTokens,
       reserveTokens: 20_000,
     });
-  const freshPersistedTokens = resolveFreshSessionTotalTokens(entry);
+  const freshPersistedTokens =
+    resolveFreshSessionTotalTokens(entry) ?? resolveStaleSessionTotalTokensForGate(entry);
   const promptTokenEstimate = estimatePromptTokensForMemoryFlush(
     params.promptForEstimate ?? params.followupRun.prompt,
   );

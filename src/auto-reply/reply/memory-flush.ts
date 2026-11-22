@@ -113,6 +113,18 @@ export function settleFailedPreflightCompaction<T>(
   return entry;
 }
 
+export function resolveStaleSessionTotalTokensForGate(
+  entry?: Pick<SessionEntry, "totalTokens"> | null,
+): number | undefined {
+  const totalTokens = asPositiveFiniteNumber(entry?.totalTokens);
+  if (totalTokens === undefined) {
+    return undefined;
+  }
+  // Last-resort fallback: stale totals decay to 80% so an outage-blind gate cannot skip
+  // compaction indefinitely when freshness/version markers are missing.
+  return Math.floor(totalTokens * 0.8);
+}
+
 export function shouldRunPreflightCompaction(params: {
   entry?: Pick<SessionEntry, "totalTokens" | "totalTokensFresh" | "totalTokensVersion">;
   /**
@@ -129,7 +141,8 @@ export function shouldRunPreflightCompaction(params: {
   const projectedTokens = asPositiveFiniteNumber(params.tokenCount);
   const totalTokens =
     projectedTokens === undefined
-      ? resolveFreshSessionTotalTokens(params.entry)
+      ? (resolveFreshSessionTotalTokens(params.entry) ??
+        resolveStaleSessionTotalTokensForGate(params.entry))
       : Math.floor(projectedTokens);
   return totalTokens !== undefined && params.threshold > 0 && totalTokens >= params.threshold;
 }
